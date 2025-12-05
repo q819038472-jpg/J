@@ -3,82 +3,62 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>XR 螺旋丸 (最终完成版)</title>
+    <title>XR 极致画质版</title>
     <style>
-        body { margin: 0; background-color: #000; overflow: hidden; font-family: sans-serif; }
+        body { margin: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; }
         #launcher {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: #000;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
-            color: white; z-index: 999;
+            background: linear-gradient(45deg, #111, #222); z-index: 10;
         }
-        h1 { color: #aaddff; text-shadow: 0 0 15px #0088ff; letter-spacing: 4px; margin-bottom: 20px; }
+        h1 { font-weight: 300; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 20px; }
         button {
-            padding: 18px 55px; font-size: 22px; border-radius: 50px; 
-            border: 2px solid #aaddff; background: rgba(0, 100, 255, 0.2); 
-            color: #aaddff; font-weight: bold; cursor: pointer;
+            padding: 18px 45px; font-size: 20px; 
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            color: white; border: none; border-radius: 50px; 
+            box-shadow: 0 0 20px rgba(0, 210, 255, 0.5);
+            transition: transform 0.1s; cursor: pointer;
         }
-        .guide { margin-top: 30px; color: #888; text-align: center; line-height: 2.0; font-size: 15px; }
+        button:active { transform: scale(0.95); }
+        p { color: #888; font-size: 14px; margin-top: 15px; }
     </style>
+    <!-- 引入 Three.js -->
     <script type="importmap">
-        {
-            "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-            }
-        }
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
     </script>
 </head>
 <body>
 
 <div id="launcher">
-    <h1>KIKŌHŌ & RASENGAN</h1>
-    <button id="btn-enter">启动系统</button>
-    <div class="guide">
-        ⏳ <b>前3秒安全锁定</b><br>
-        🌀 <b>左手摊开</b>：慢速凝聚螺旋丸<br>
-        💨 <b>凝聚后用力甩</b>：发射螺旋丸<br>
-        👊 <b>握拳/待机</b>：左手可拨弄悬浮粒子
-    </div>
+    <h1>✨ 能量粒子场</h1>
+    <button id="btn-enter">初始化 AR 空间</button>
+    <p>空间定位 | 柔光粒子 | 手势交互</p>
 </div>
 
 <script type="module">
     import * as THREE from 'three';
-    import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
     let camera, scene, renderer;
     let hand1, hand2;
-    let stage;
-    let meshSystem, dummy = new THREE.Object3D();
+    let particleSystem, particleGeo;
+    let originalPositions = []; // 原始位置
+    let randomOffsets = [];     // 随机偏移量（用于呼吸效果）
 
-    const PARTICLE_COUNT = 1500; 
-    
-    const pos = new Float32Array(PARTICLE_COUNT * 3);
-    const vel = new Float32Array(PARTICLE_COUNT * 3);
-    const originalPos = new Float32Array(PARTICLE_COUNT * 3);
-    const phases = new Float32Array(PARTICLE_COUNT);
+    // 粒子参数
+    const PARTICLE_COUNT = 2500;
+    const PARTICLE_SIZE = 0.015; // 粒子大小
+    const RADIUS = 0.3; // 初始球体半径
 
-    const handsInfo = {
-        left: { active: false, pos: new THREE.Vector3(), wrist: new THREE.Vector3(), thumb: new THREE.Vector3(), index: new THREE.Vector3(), model: null },
-        right: { active: false, pos: new THREE.Vector3(), wrist: new THREE.Vector3(), thumb: new THREE.Vector3(), index: new THREE.Vector3(), model: null }
-    };
+    // 空间容器
+    let stage; 
 
-    let lastLeftPos = new THREE.Vector3();
-    let leftHandVelocity = new THREE.Vector3();
-    let thrownBallPos = new THREE.Vector3();
-    let thrownBallVel = new THREE.Vector3();
-    let chargingTimer = 0; 
+    document.getElementById('btn-enter').addEventListener('click', onEnter);
 
-    let appState = 'IDLE'; 
-    let fireDir = new THREE.Vector3(0,0,-1);
-    let kikohoCenter = new THREE.Vector3();
-    const clock = new THREE.Clock();
-
-    document.getElementById('btn-enter').addEventListener('click', async () => {
-        if (!navigator.xr) return alert("不支持 XR");
+    async function onEnter() {
+        if (!navigator.xr) return alert("不支持 WebXR");
         try {
             const session = await navigator.xr.requestSession('immersive-ar', {
-                requiredFeatures: ['local'],
+                requiredFeatures: ['local'], 
                 optionalFeatures: ['hand-tracking']
             });
             document.getElementById('launcher').style.display = 'none';
@@ -86,7 +66,27 @@
         } catch (e) {
             alert("启动失败: " + e.message);
         }
-    });
+    }
+
+    // --- 动态生成柔光纹理 (无需加载图片) ---
+    function getSoftGlowTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+
+        // 绘制径向渐变
+        const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');   // 中心极亮
+        gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.8)'); // 核心光晕
+        gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.2)'); // 外部柔光
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');           // 边缘透明
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 32, 32);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        return texture;
+    }
 
     function initThree(session) {
         scene = new THREE.Scene();
@@ -98,7 +98,7 @@
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.xr.enabled = true;
-        renderer.xr.setReferenceSpaceType('local');
+        renderer.xr.setReferenceSpaceType('local'); // 使用 local 空间，原点在启动时的头部位置
         renderer.xr.setSession(session);
 
         session.addEventListener('end', () => {
@@ -106,356 +106,161 @@
             document.getElementById('launcher').style.display = 'flex';
         });
 
+        // --- 创建空间舞台 ---
         stage = new THREE.Group();
+        // 【关键】固定在启动时位置的正前方 0.6 米，高度略低于视线
+        stage.position.set(0, -0.2, -0.6); 
         scene.add(stage);
 
-        // --- 已删除红框 ---
-
-        const handModelFactory = new XRHandModelFactory();
-        function setupHand(index) {
-            const hand = renderer.xr.getHand(index);
-            const model = handModelFactory.createHandModel(hand, "mesh");
-            hand.add(model);
-            scene.add(hand);
-            return { hand, model };
-        }
-        const h1 = setupHand(0); hand1 = h1.hand; handsInfo.left.model = h1.model;
-        const h2 = setupHand(1); hand2 = h2.hand; handsInfo.right.model = h2.model;
-
+        // 1. 创建粒子系统
         createParticles();
+
+        // 2. 添加手部
+        hand1 = renderer.xr.getHand(0); scene.add(hand1);
+        hand2 = renderer.xr.getHand(1); scene.add(hand2);
 
         renderer.setAnimationLoop(render);
     }
 
     function createParticles() {
-        const geometry = new THREE.IcosahedronGeometry(0.006, 1);
-        const material = new THREE.MeshBasicMaterial({
-            color: 0xffffff,
+        const geometry = new THREE.BufferGeometry();
+        const positions = [];
+        const colors = [];
+
+        const color1 = new THREE.Color(0x00d2ff); // 青蓝
+        const color2 = new THREE.Color(0x9d00ff); // 紫色
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            // 球形分布算法
+            const u = Math.random();
+            const v = Math.random();
+            const theta = 2 * Math.PI * u;
+            const phi = Math.acos(2 * v - 1);
+            // 稍微让它松散一点，不要全是实心
+            const r = Math.cbrt(Math.random()) * RADIUS;
+
+            const x = r * Math.sin(phi) * Math.cos(theta);
+            const y = r * Math.sin(phi) * Math.sin(theta);
+            const z = r * Math.cos(phi);
+
+            positions.push(x, y, z);
+
+            // 保存原始位置用于复原
+            originalPositions.push({x, y, z});
+            // 随机相位，让每个粒子呼吸节奏不一样
+            randomOffsets.push(Math.random() * 100);
+
+            // 随机混合颜色
+            const mixedColor = color1.clone().lerp(color2, Math.random());
+            colors.push(mixedColor.r, mixedColor.g, mixedColor.b);
+        }
+
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        particleGeo = geometry;
+
+        // --- 高级材质设置 ---
+        const material = new THREE.PointsMaterial({
+            size: PARTICLE_SIZE,
+            map: getSoftGlowTexture(), // 使用动态生成的光晕纹理
+            vertexColors: true,        // 启用顶点颜色
             transparent: true,
-            opacity: 0.9, 
-            depthWrite: false, 
-            blending: THREE.NormalBlending 
+            opacity: 0.9,
+            // 关键：AdditveBlending 会让粒子叠加变亮，但在明亮AR背景下可能看不清
+            // 既然我们要“细腻且不崩溃”，使用 NormalBlending 配合发光贴图是最稳妥的
+            // 如果背景很黑，Additive 效果更好；如果背景是白天室内，Normal 更好。
+            // 这里我们用 Custom (Normal) 但关掉 depthWrite
+            blending: THREE.NormalBlending, 
+            depthWrite: false, // 粒子之间不遮挡，看起来更像一团云
+            depthTest: true
         });
 
-        meshSystem = new THREE.InstancedMesh(geometry, material, PARTICLE_COUNT);
-        meshSystem.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        
-        for(let i=0; i<PARTICLE_COUNT; i++) {
-            const r = 0.3 + Math.random() * 0.9;
-            const theta = Math.random() * Math.PI * 2;
-            const y = (Math.random() - 0.5) * 1.0;
-            const x = r * Math.cos(theta);
-            const z = r * Math.sin(theta) - 0.3;
-
-            pos[i*3] = x; pos[i*3+1] = y; pos[i*3+2] = z;
-            originalPos[i*3] = x; originalPos[i*3+1] = y; originalPos[i*3+2] = z;
-            vel[i*3] = 0; vel[i*3+1] = 0; vel[i*3+2] = 0;
-            phases[i] = Math.random() * 100;
-
-            dummy.position.set(x,y,z);
-            dummy.updateMatrix();
-            meshSystem.setMatrixAt(i, dummy.matrix);
-            
-            meshSystem.setColorAt(i, new THREE.Color(0xaaddff));
-        }
-        stage.add(meshSystem);
+        particleSystem = new THREE.Points(geometry, material);
+        stage.add(particleSystem);
     }
 
-    function fixHandMaterial(hand, colorHex) {
-        if (!hand) return;
-        hand.traverse((child) => {
-            if (child.isMesh) {
-                if (!child.userData.initMat) {
-                    child.material = new THREE.MeshBasicMaterial({
-                        color: colorHex, wireframe: true,
-                        transparent: true, opacity: 0.3, depthTest: false
-                    });
-                    child.userData.initMat = true;
-                } else {
-                    child.material.color.setHex(colorHex);
-                }
-            }
-        });
+    function getGesture(hand) {
+        if (!hand || !hand.joints || !hand.joints['wrist'] || !hand.joints['middle-finger-tip']) return 'neutral';
+        const d = hand.joints['wrist'].position.distanceTo(hand.joints['middle-finger-tip'].position);
+        if (d < 0.08) return 'fist';
+        if (d > 0.12) return 'palm';
+        return 'neutral';
     }
 
-    function updateHandInfo(hand, info, isLeft, delta) {
-        info.active = false;
-        if (hand.joints && hand.joints['wrist'] && 
-            hand.joints['thumb-tip'] && hand.joints['index-finger-tip']) {
-            
-            if (hand.joints['wrist'].position.length() > 0) {
-                info.active = true;
-                hand.joints['wrist'].getWorldPosition(info.wrist);
-                hand.joints['thumb-tip'].getWorldPosition(info.thumb);
-                hand.joints['index-finger-tip'].getWorldPosition(info.index);
-                
-                // === 坐标修正区域 ===
-                const vHand = new THREE.Vector3().subVectors(info.index, info.wrist);
-                const vThumb = new THREE.Vector3().subVectors(info.thumb, info.wrist);
-                
-                // 1. 基准点
-                const fingerBase = new THREE.Vector3().copy(info.wrist).add(vHand.clone().multiplyScalar(0.75));
-                
-                // 2. 法线
-                const vNormal = new THREE.Vector3().crossVectors(vThumb, vHand).normalize().multiplyScalar(-1);
-                
-                // 3. 高度 12cm
-                const heightVec = vNormal.clone().multiplyScalar(0.12);
-
-                // 4. 手外侧漂移 5cm
-                const vSide = new THREE.Vector3().crossVectors(vNormal, vHand).normalize();
-                const sideOffset = vSide.multiplyScalar(0.05);
-
-                // 最终位置
-                info.pos.copy(fingerBase).add(heightVec).add(sideOffset);
-
-                // === 速度计算 ===
-                if (isLeft && delta > 0) {
-                    if (lastLeftPos.lengthSq() > 0.001) {
-                        const disp = new THREE.Vector3().subVectors(info.pos, lastLeftPos);
-                        const currentVel = disp.divideScalar(delta);
-                        leftHandVelocity.lerp(currentVel, 0.5); 
-                    } else {
-                        leftHandVelocity.set(0,0,0);
-                    }
-                    lastLeftPos.copy(info.pos);
-                }
-            }
-        }
-    }
-
-    function updateState(delta) {
-        let leftColor = 0xffffff;
-        let rightColor = 0xffffff;
-
-        // 1. 握拳重置
-        let isFist = false;
-        if(hand1.joints && hand1.joints['middle-finger-tip']) {
-             const d = hand1.joints['middle-finger-tip'].position.distanceTo(hand1.joints['wrist'].position);
-             if (d < 0.08) isFist = true;
-        }
-        if (isFist) {
-            appState = 'IDLE';
-            chargingTimer = 0;
-            fixHandMaterial(handsInfo.left.model, 0xff0000);
-            fixHandMaterial(handsInfo.right.model, 0xff0000);
-            return;
-        }
-
-        // 2. 气功炮
-        if (handsInfo.left.active && handsInfo.right.active && appState !== 'THROWN') {
-            const thumbDist = handsInfo.left.thumb.distanceTo(handsInfo.right.thumb);
-            const indexDist = handsInfo.left.index.distanceTo(handsInfo.right.index);
-            if (thumbDist < 0.08 && indexDist < 0.08) {
-                appState = 'FIRING';
-                kikohoCenter.set(0,0,0)
-                    .add(handsInfo.left.thumb).add(handsInfo.right.thumb)
-                    .add(handsInfo.left.index).add(handsInfo.right.index)
-                    .multiplyScalar(0.25);
-                const headPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-                fireDir.subVectors(kikohoCenter, headPos).normalize();
-                
-                fixHandMaterial(handsInfo.left.model, 0xffff00); 
-                fixHandMaterial(handsInfo.right.model, 0xffff00);
-                return;
-            }
-        }
-
-        // 3. 螺旋丸
-        if (handsInfo.left.active && appState !== 'FIRING') {
-            if (appState === 'THROWN') {
-                leftColor = 0x00ff00;
-                const dist = thrownBallPos.distanceTo(camera.position);
-                if (dist > 50) appState = 'IDLE';
-            } 
-            else {
-                const d = hand1.joints['index-finger-tip'].position.distanceTo(hand1.joints['wrist'].position);
-                if (d > 0.12) { 
-                    appState = 'CHARGING';
-                    leftColor = 0x00ffff;
-                    chargingTimer += delta;
-
-                    const speed = leftHandVelocity.length();
-                    if (chargingTimer > 0.3 && speed > 2.0) {
-                        appState = 'THROWN';
-                        thrownBallPos.copy(handsInfo.left.pos);
-                        thrownBallVel.copy(leftHandVelocity).multiplyScalar(1.3);
-                        thrownBallVel.clampLength(0, 20);
-                        chargingTimer = 0;
-                    }
-                } else {
-                    if (appState === 'CHARGING') {
-                        appState = 'IDLE';
-                        chargingTimer = 0;
-                    }
-                }
-            }
-        }
-        fixHandMaterial(handsInfo.left.model, leftColor);
-        fixHandMaterial(handsInfo.right.model, rightColor);
-    }
+    // 动画时钟
+    const clock = new THREE.Clock();
 
     function render() {
-        const delta = clock.getDelta();
         const time = clock.getElapsedTime();
-        
-        if (time < 3.0) {
-            fixHandMaterial(handsInfo.left.model, 0x555555);
-            fixHandMaterial(handsInfo.right.model, 0x555555);
-            for(let i=0; i<PARTICLE_COUNT; i++) {
-                dummy.position.set(originalPos[i*3], originalPos[i*3+1], originalPos[i*3+2]);
-                dummy.scale.set(1,1,1);
-                dummy.updateMatrix();
-                meshSystem.setMatrixAt(i, dummy.matrix);
-            }
-            meshSystem.instanceMatrix.needsUpdate = true;
-            renderer.render(scene, camera);
-            return;
-        }
 
-        const friction = 0.90; 
-        
-        updateHandInfo(hand1, handsInfo.left, true, delta);
-        updateHandInfo(hand2, handsInfo.right, false, delta);
-        updateState(delta);
+        // 1. 检测手势
+        let gesture = 'neutral';
+        const g1 = getGesture(hand1);
+        const g2 = getGesture(hand2);
+        if (g1 !== 'neutral' && g1 !== 'none') gesture = g1;
+        else if (g2 !== 'neutral' && g2 !== 'none') gesture = g2;
 
-        if (appState === 'THROWN') {
-            thrownBallPos.add(thrownBallVel.clone().multiplyScalar(delta));
-            thrownBallVel.y -= 0.5 * delta;
-        }
+        // 2. 粒子动画逻辑
+        const positions = particleGeo.attributes.position.array;
 
-        const cIdle = new THREE.Color(0xaaddff); 
-        const cCharge = new THREE.Color(0x88ccff); 
-        const cFire = new THREE.Color(0xffff00); 
-        const cCore = new THREE.Color(0xffffff);
+        // 目标颜色 (用于整个粒子团变色)
+        let targetR=0, targetG=0, targetB=0; 
+        // 这里只是简单的逻辑，如果要改单个粒子颜色需要操作 color buffer，为性能考虑暂且只改形态
 
         for(let i=0; i<PARTICLE_COUNT; i++) {
-            const ix = i*3;
-            let px = pos[ix], py = pos[ix+1], pz = pos[ix+2];
-            let vx = vel[ix], vy = vel[ix+1], vz = vel[ix+2];
+            const ix = i * 3;
+            const ox = originalPositions[i].x;
+            const oy = originalPositions[i].y;
+            const oz = originalPositions[i].z;
 
-            if (appState === 'FIRING') {
-                vx += fireDir.x * 0.3 + (Math.random()-0.5)*0.01;
-                vy += fireDir.y * 0.3 + (Math.random()-0.5)*0.01;
-                vz += fireDir.z * 0.3 + (Math.random()-0.5)*0.01;
-                meshSystem.setColorAt(i, cFire);
-                dummy.scale.set(1.5, 1.5, 10.0);
-                dummy.lookAt(px+vx, py+vy, pz+vz);
+            // --- 呼吸效果 (Idle Animation) ---
+            // 让粒子在原位附近做正弦波运动
+            const drift = Math.sin(time * 1.5 + randomOffsets[i]) * 0.02;
 
-            } else if (appState === 'CHARGING' || appState === 'THROWN') {
-                
-                let target;
-                if (appState === 'THROWN') {
-                    target = thrownBallPos;
-                    vx += (target.x - px) * 0.2; 
-                    vy += (target.y - py) * 0.2;
-                    vz += (target.z - pz) * 0.2;
-                } else {
-                    target = handsInfo.left.pos;
-                }
+            let tx, ty, tz;
 
-                const dx = px - target.x;
-                const dy = py - target.y;
-                const dz = pz - target.z;
-                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-                
-                // === 极致慢速优雅汇聚 (0.015) ===
-                const targetRadius = 0.04;
-                if (dist > targetRadius) {
-                    const pullStrength = 0.015; 
-                    vx -= (dx / dist) * pullStrength;
-                    vy -= (dy / dist) * pullStrength;
-                    vz -= (dz / dist) * pullStrength;
-                } else {
-                    const pushStrength = 0.01;
-                    vx += (dx / dist) * pushStrength;
-                    vy += (dy / dist) * pushStrength;
-                    vz += (dz / dist) * pushStrength;
-                }
-
-                const spin = 0.05; 
-                vx += dz * spin; 
-                vz -= dx * spin; 
-                vy += Math.sin(time * 3 + phases[i]) * 0.005;
-                
-                vx += (Math.random()-0.5) * 0.02;
-                vy += (Math.random()-0.5) * 0.02;
-                vz += (Math.random()-0.5) * 0.02;
-
-                vx *= 0.6; vy *= 0.6; vz *= 0.6;
-
-                // === 核心白光增强 ===
-                // 之前是 0.03, 现在扩大到 0.035, 让核心更饱满
-                if (dist < 0.035) meshSystem.setColorAt(i, cCore); 
-                else meshSystem.setColorAt(i, cCharge);
-
-                dummy.scale.set(0.8, 0.8, 0.8);
-                dummy.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
-
+            if (gesture === 'palm') {
+                // 💥 烟花模式：向外爆炸，并加上强烈的随机抖动
+                // 颜色我们通过 material.color 全局叠加
+                tx = ox * 3.5 + drift;
+                ty = oy * 3.5 + drift;
+                tz = oz * 3.5 + drift;
+            } else if (gesture === 'fist') {
+                // 🛑 聚合模式：强力压缩到中心
+                tx = ox * 0.1;
+                ty = oy * 0.1;
+                tz = oz * 0.1;
             } else {
-                // --- 待机 ---
-                const ox = originalPos[ix], oy = originalPos[ix+1], oz = originalPos[ix+2];
-                const floatY = Math.sin(time * 1.5 + phases[i]) * 0.05;
-                vx += (ox - px) * 0.03;
-                vy += (oy + floatY - py) * 0.03;
-                vz += (oz - pz) * 0.03;
-
-                // 左手拨弄
-                if (handsInfo.left.active) {
-                     const ldx = px - handsInfo.left.wrist.x;
-                     const ldy = py - handsInfo.left.wrist.y;
-                     const ldz = pz - handsInfo.left.wrist.z;
-                     if (ldx*ldx+ldy*ldy+ldz*ldz < 0.08) {
-                         vx += ldx * 0.05; vy += ldy * 0.05; vz += ldz * 0.05;
-                     }
-                }
-                // 右手拨弄
-                if (handsInfo.right.active) {
-                     const rdx = px - handsInfo.right.wrist.x;
-                     const rdy = py - handsInfo.right.wrist.y;
-                     const rdz = pz - handsInfo.right.wrist.z;
-                     if (rdx*rdx+rdy*rdy+rdz*rdz < 0.08) {
-                         vx += rdx * 0.05; vy += rdy * 0.05; vz += rdz * 0.05;
-                     }
-                }
-
-                meshSystem.setColorAt(i, cIdle);
-                dummy.scale.set(1,1,1);
-                dummy.rotation.set(0,0,0);
+                // 🌊 默认模式：复原 + 呼吸
+                tx = ox + drift;
+                ty = oy + drift;
+                tz = oz + drift;
             }
 
-            vx *= friction; vy *= friction; vz *= friction;
-            
-            const speed = Math.sqrt(vx*vx + vy*vy + vz*vz);
-            if (speed > 0.05) {
-                const r = 0.05 / speed;
-                vx *= r; vy *= r; vz *= r;
-            }
-
-            px += vx; py += vy; pz += vz;
-
-            if (appState === 'FIRING') {
-                if (px*px+py*py+pz*pz > 64) {
-                    px = kikohoCenter.x + (Math.random()-0.5)*0.2;
-                    py = kikohoCenter.y + (Math.random()-0.5)*0.2;
-                    pz = kikohoCenter.z + (Math.random()-0.5)*0.2;
-                    vx=0;vy=0;vz=0;
-                }
-            }
-
-            pos[ix] = px; pos[ix+1] = py; pos[ix+2] = pz;
-            vel[ix] = vx; vel[ix+1] = vy; vel[ix+2] = vz;
-
-            dummy.position.set(px, py, pz);
-            if (appState !== 'FIRING') {
-                dummy.rotation.x += vx*5; dummy.rotation.y += vy*5;
-            }
-            dummy.updateMatrix();
-            meshSystem.setMatrixAt(i, dummy.matrix);
+            // 平滑插值 (Lerp) - 让运动有“阻尼感”，而不是瞬间跳变
+            // 0.1 是平滑系数，越小越慢
+            positions[ix]   += (tx - positions[ix]) * 0.08;
+            positions[ix+1] += (ty - positions[ix+1]) * 0.08;
+            positions[ix+2] += (tz - positions[ix+2]) * 0.08;
         }
 
-        meshSystem.instanceMatrix.needsUpdate = true;
-        meshSystem.instanceColor.needsUpdate = true;
+        // 全局颜色修正
+        if (gesture === 'palm') {
+            particleSystem.material.color.setHex(0xffaa00); // 暖金
+            particleSystem.material.opacity = 1.0;
+        } else if (gesture === 'fist') {
+            particleSystem.material.color.setHex(0xff0055); // 炽红
+            particleSystem.material.opacity = 0.8;
+        } else {
+            particleSystem.material.color.setHex(0xffffff); // 恢复原本的蓝紫渐变
+            particleSystem.material.opacity = 0.9;
+        }
+
+        particleGeo.attributes.position.needsUpdate = true;
+
+        // 缓慢旋转整个舞台，增加空间感
+        stage.rotation.y += 0.002;
+
         renderer.render(scene, camera);
     }
 </script>
