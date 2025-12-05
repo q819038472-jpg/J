@@ -3,31 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Super Scouter XR</title>
+    <title>Vegeta Scouter Overload</title>
+    <!-- 引入龙珠风格字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=ZCOOL+QingKe+HuangYou&display=swap" rel="stylesheet">
+
     <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; }
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'ZCOOL QingKe HuangYou', sans-serif; }
 
         #launcher {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 10, 0, 0.95);
+            background: rgba(10, 0, 0, 0.95);
             display: flex; flex-direction: column; align-items: center; justify-content: center;
-            z-index: 999; color: #fff;
+            z-index: 999; color: #ffaa00;
         }
 
         button {
-            padding: 15px 40px; font-size: 20px; 
-            color: #000; background: #fff; border: 2px solid #fff; 
-            border-radius: 30px; font-weight: bold; cursor: pointer; margin-top: 20px;
-            box-shadow: 0 0 15px #fff;
+            padding: 15px 50px; font-size: 28px; 
+            color: #000; background: #ffaa00; border: none; 
+            border-radius: 2px; cursor: pointer; margin-top: 30px;
+            box-shadow: 0 0 25px #ff4400; 
+            font-family: 'ZCOOL QingKe HuangYou', cursive; letter-spacing: 2px;
+            transition: transform 0.1s;
         }
+        button:active { transform: scale(0.95); }
 
         #hud-status {
             position: absolute; bottom: 10%; width: 100%; text-align: center;
-            color: #fff; font-size: 18px; pointer-events: none; 
-            text-shadow: 0 0 5px #000; display: none; letter-spacing: 2px;
+            color: #ffaa00; font-size: 24px; pointer-events: none; 
+            text-shadow: 0 0 5px #ff0000; display: none; letter-spacing: 3px;
         }
+
+        .font-preload { opacity: 0; position: absolute; font-family: 'ZCOOL QingKe HuangYou', cursive; }
     </style>
-    <!-- Import Map -->
     <script type="importmap">
         {
             "imports": {
@@ -39,16 +46,18 @@
 </head>
 <body>
 
+<div class="font-preload">系统故障错误乱码极度危险</div>
+
 <div id="launcher">
-    <h1 style="text-shadow: 0 0 10px #0f0;">SCOUTER SYSTEM v2.0</h1>
-    <div style="border:1px solid #666; padding:20px; border-radius:10px; background:rgba(0,0,0,0.5)">
-        <p>👉 <b>RIGHT HAND POINT</b>: Scan Target</p>
-        <p>✊ <b>LEFT HAND FIST</b>: Reset</p>
+    <h1 style="text-shadow: 0 0 20px #ff0000; font-size: 48px; margin: 0; letter-spacing: 5px;">赛亚人探测器</h1>
+    <div style="border-left: 5px solid #ff4400; padding-left: 20px; margin-top: 20px;">
+        <p style="color: #00ffff; opacity: 0.9; font-size: 22px; margin: 5px 0;">模式：过载模拟 (Overload)</p>
+        <p style="color: #ffaa00; font-size: 18px; margin: 5px 0;">特定目标反应：贝吉塔 -> 乱码/闪烁</p>
     </div>
-    <button id="btn-start">ACTIVATE HUD</button>
+    <button id="btn-start">启动 HUD</button>
 </div>
 
-<div id="hud-status">SYSTEM ONLINE</div>
+<div id="hud-status">系统初始化...</div>
 
 <script type="module">
     import * as THREE from 'three';
@@ -57,9 +66,428 @@
     let camera, scene, renderer;
     let handLeft, handRight;
 
-    // 物体对象
-    let cursorTriangle; // 启动时的白色三角
-    let targetGroup;    // 包含轮廓、指针的组
+    // 视觉对象
+    let aimCursor;
+    let targetGroup;    
+    let powerSprite;    
+
+    // 逻辑控制
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+    let isLocked = false;
+    let scanInterval = null;
+    let animationStartTime = 0;
+
+    // 新增：系统过载状态
+    let isSystemOverload = false;
+
+    // UI 配置
+    const THEME_COLOR = "#ffaa00"; 
+    const THEME_BG = "rgba(20, 0, 0, 0.85)"; 
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 512; canvas.height = 256;
+
+    // 赛博材质
+    const cyberHandMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ffff, wireframe: true, transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, side: THREE.DoubleSide
+    });
+
+    // 缓动函数
+    function easeOutExpo(x) { return x === 1 ? 1 : 1 - Math.pow(2, -10 * x); }
+    function easeOutBack(x) { const c1 = 1.70158; const c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+
+    document.getElementById('btn-start').addEventListener('click', initAR);
+
+    async function initAR() {
+        if (!navigator.xr) return alert("WebXR不支持");
+        const session = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['local', 'hit-test'],
+            optionalFeatures: ['hand-tracking', 'dom-overlay'],
+            domOverlay: { root: document.body }
+        });
+        document.getElementById('launcher').style.display = 'none';
+        document.getElementById('hud-status').style.display = 'block';
+        initScene(session);
+    }
+
+    function initScene(session) {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.xr.enabled = true;
+        renderer.xr.setReferenceSpaceType('local');
+        renderer.xr.setSession(session);
+        session.addEventListener('end', () => location.reload());
+
+        const light = new THREE.DirectionalLight(0xffffff, 2);
+        light.position.set(0, 5, 2);
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x404040));
+
+        // 十字准星
+        const cursorTexture = createCursorTexture();
+        const cursorMat = new THREE.SpriteMaterial({ map: cursorTexture, color: 0xffffff, transparent: true, opacity: 0.9 });
+        aimCursor = new THREE.Sprite(cursorMat);
+        aimCursor.scale.set(0.08, 0.08, 1);
+        aimCursor.visible = false;
+        scene.add(aimCursor);
+
+        createTargetVisuals();
+        setupHands();
+
+        renderer.setAnimationLoop(render);
+    }
+
+    function createCursorTexture() {
+        const cvs = document.createElement('canvas');
+        cvs.width = 128; cvs.height = 128;
+        const c = cvs.getContext('2d');
+        c.strokeStyle = '#ffffff';
+        c.lineWidth = 6;
+        c.beginPath(); c.moveTo(64, 20); c.lineTo(64, 108); c.stroke();
+        c.beginPath(); c.moveTo(20, 64); c.lineTo(108, 64); c.stroke();
+        c.beginPath(); c.arc(64, 64, 40, 0, Math.PI*2); c.stroke();
+        return new THREE.CanvasTexture(cvs);
+    }
+
+    function createTargetVisuals() {
+        targetGroup = new THREE.Group();
+        targetGroup.visible = false;
+        scene.add(targetGroup);
+
+        // A. 战术框
+        const bracketGeo = new THREE.BufferGeometry();
+        const s = 0.3; 
+        const vertices = new Float32Array([
+            -s, s, 0,  -s+0.1, s, 0,  -s, s, 0,  -s, s-0.1, 0,
+             s, s, 0,   s-0.1, s, 0,   s, s, 0,   s, s-0.1, 0,
+            -s, -s, 0, -s+0.1, -s, 0, -s, -s, 0, -s, -s+0.1, 0,
+             s, -s, 0,  s-0.1, -s, 0,  s, -s, 0,  s, -s+0.1, 0
+        ]);
+        bracketGeo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        const bracketMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2, transparent: true, opacity: 0 });
+        const brackets = new THREE.LineSegments(bracketGeo, bracketMat);
+        brackets.name = "brackets";
+        targetGroup.add(brackets);
+
+        // B. 激光
+        const planeGeo = new THREE.PlaneGeometry(0.6, 0.02);
+        const planeMat = new THREE.MeshBasicMaterial({ color: 0xff3300, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+        const laserPlane = new THREE.Mesh(planeGeo, planeMat);
+        laserPlane.name = "laser";
+        targetGroup.add(laserPlane);
+
+        // C. 指针
+        const ptrGeo = new THREE.ConeGeometry(0.05, 0.15, 4);
+        const ptrMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); 
+        const leftPtr = new THREE.Mesh(ptrGeo, ptrMat);
+        leftPtr.rotation.z = -Math.PI / 2; leftPtr.name = "leftPtr";
+        targetGroup.add(leftPtr);
+
+        const rightPtr = new THREE.Mesh(ptrGeo, ptrMat);
+        rightPtr.rotation.z = Math.PI / 2; rightPtr.name = "rightPtr";
+        targetGroup.add(rightPtr);
+    }
+
+    function setupHands() {
+        const handModelFactory = new XRHandModelFactory();
+        function buildHand(idx) {
+            const hand = renderer.xr.getHand(idx);
+            hand.add(handModelFactory.createHandModel(hand, "mesh"));
+            scene.add(hand);
+            return hand;
+        }
+        handLeft = buildHand(0);
+        handRight = buildHand(1);
+    }
+
+    function enforceCyberHandStyle(hand) {
+        if (!hand) return;
+        hand.traverse((child) => {
+            if (child.isMesh && child.material !== cyberHandMaterial) {
+                child.material = cyberHandMaterial;
+                child.renderOrder = 1; 
+            }
+        });
+    }
+
+    // --- 乱码生成器 ---
+    function getGlitchString() {
+        const chars = "!@#$%^&*?ERR0101";
+        let str = "";
+        for(let i=0; i<5; i++) {
+            str += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return str;
+    }
+
+    function updateCanvasUI(powerValue, isFinal) {
+        // 清空
+        ctx.clearRect(0, 0, 512, 256);
+
+        // 闪烁逻辑：如果过载，根据时间戳进行高频闪烁
+        let isFlashOn = true;
+        if (isSystemOverload && isFinal) {
+            isFlashOn = (Date.now() % 200) < 100; // 每100ms切换一次
+        }
+
+        // 背景
+        ctx.fillStyle = isSystemOverload && isFinal && isFlashOn ? "rgba(100, 0, 0, 0.8)" : THEME_BG;
+        ctx.beginPath();
+        ctx.moveTo(0, 0); ctx.lineTo(480, 0); ctx.lineTo(512, 32); 
+        ctx.lineTo(512, 256); ctx.lineTo(32, 256); ctx.lineTo(0, 224); 
+        ctx.closePath();
+        ctx.fill();
+
+        // 边框颜色与文字内容逻辑
+        let borderColor = "#ffaa00"; 
+        let dangerText = "正在分析...";
+        let mainText = Math.floor(powerValue);
+
+        if (isFinal) {
+            if (isSystemOverload) {
+                // --- 贝吉塔模式 (乱码 + 闪烁) ---
+                borderColor = isFlashOn ? "#ff0000" : "rgba(255,0,0,0.2)";
+                dangerText = "!!! 错误 !!!";
+                mainText = getGlitchString(); // 显示乱码
+            } else {
+                // --- 普通模式 ---
+                if (powerValue < 9000) {
+                    borderColor = "#ffffff"; dangerText = "一般般";
+                } else if (powerValue >= 9000 && powerValue <= 18000) {
+                    borderColor = "#ffaa00"; dangerText = "警惕！";
+                } else {
+                    borderColor = "#ff0000"; dangerText = "极度危险";
+                }
+            }
+        }
+
+        // 绘制边框
+        ctx.strokeStyle = borderColor; ctx.lineWidth = 6; ctx.stroke();
+
+        // 装饰线
+        ctx.strokeStyle = "rgba(255, 100, 0, 0.3)"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(20, 60); ctx.lineTo(492, 60); ctx.stroke();
+
+        // 主数值/乱码
+        ctx.font = isSystemOverload ? "130px 'ZCOOL QingKe HuangYou'" : "110px 'ZCOOL QingKe HuangYou'";
+        ctx.textAlign = "center";
+        ctx.shadowBlur = 15; ctx.shadowColor = borderColor;
+        ctx.fillStyle = isFinal ? "#fff" : THEME_COLOR;
+
+        // 如果过载，稍微抖动文字位置
+        let offsetX = 0; let offsetY = 0;
+        if(isSystemOverload && isFinal) {
+            offsetX = (Math.random()-0.5) * 10;
+            offsetY = (Math.random()-0.5) * 10;
+        }
+        ctx.fillText(mainText, 256 + offsetX, 170 + offsetY);
+
+        // 标题
+        ctx.font = "32px 'ZCOOL QingKe HuangYou'"; ctx.fillStyle = "#ffaa00";
+        ctx.shadowBlur = 0; ctx.textAlign = "left";
+        ctx.fillText("战斗力探测仪", 25, 45);
+
+        // 危险等级
+        ctx.textAlign = "right"; ctx.fillStyle = isSystemOverload ? "#ff0000" : borderColor; 
+        ctx.fillText(dangerText, 485, 45);
+
+        // 底部状态
+        ctx.textAlign = "center"; ctx.fillStyle = "#ffffff";
+        ctx.font = "28px 'ZCOOL QingKe HuangYou'";
+        let statusText = isFinal ? "目标已锁定" : "数据读取中...";
+        if(isSystemOverload && isFinal) statusText = "系统承载过大 - 无法计算";
+        ctx.fillText(statusText, 256, 225);
+    }
+
+    function triggerScan(position) {
+        if (isLocked) return;
+        isLocked = true;
+        isSystemOverload = false; // 重置过载状态
+        aimCursor.visible = false;
+        animationStartTime = Date.now();
+
+        targetGroup.position.copy(position);
+        targetGroup.lookAt(camera.position); 
+        targetGroup.visible = true;
+
+        const uiPos = position.clone().add(new THREE.Vector3(0, 0.65, 0));
+
+        if (powerSprite) scene.remove(powerSprite);
+        const texture = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0 });
+        powerSprite = new THREE.Sprite(mat);
+        powerSprite.position.copy(uiPos);
+        powerSprite.scale.set(0, 0, 0); 
+        scene.add(powerSprite);
+
+        // 核心算法
+        const dist = camera.position.distanceTo(position);
+        let calculatedPower = 6000 + (7000 / (dist + 0.1)); 
+        calculatedPower += Math.random() * 2000;
+        let finalPower = Math.min(Math.max(calculatedPower, 8000), 20000);
+
+        // --- 贝吉塔识别逻辑 ---
+        // 既然你说是贝吉塔，我们增加一个概率，或者只要数值足够高(>18000)，就判定为贝吉塔并触发乱码
+        // 为了演示效果，我们强制：如果计算出的数值本来就是“极度危险” (>18000)，就触发贝吉塔故障模式
+        if (finalPower > 18000) {
+            isSystemOverload = true;
+        }
+
+        // 稍微hack一下：为了让你更容易看到效果，如果距离很近（dist < 1.0），直接判定为贝吉塔
+        if (dist < 1.0) {
+            isSystemOverload = true;
+            finalPower = 22000; // 内部数值设高
+        }
+
+        let steps = 0;
+        scanInterval = setInterval(() => {
+            steps++;
+            const rnd = Math.floor(Math.random() * 25000);
+            updateCanvasUI(rnd, false);
+            texture.needsUpdate = true;
+
+            if (steps > 40) { // 2秒
+                // 注意：这里不清空 interval，因为我们需要乱码一直闪烁
+                // 改为进入“结果展示阶段”
+
+                // 只有普通模式才停止刷新
+                if (!isSystemOverload) {
+                     clearInterval(scanInterval);
+                } else {
+                     // 过载模式：降低刷新频率，变成闪烁动画 loop
+                     clearInterval(scanInterval);
+                     scanInterval = setInterval(()=>{
+                         updateCanvasUI(0, true); // 参数0无所谓，因为内部会用乱码覆盖
+                         texture.needsUpdate = true;
+                     }, 100);
+                }
+
+                // 首次展示结果
+                updateCanvasUI(finalPower, true);
+                texture.needsUpdate = true;
+
+                const brackets = targetGroup.getObjectByName("brackets");
+                if (isSystemOverload) {
+                    brackets.material.color.setHex(0xff0000); // 红色
+                } else if (finalPower >= 9000) {
+                    brackets.material.color.setHex(0xffaa00); // 橙色
+                }
+            }
+        }, 50);
+    }
+
+    function resetSystem() {
+        isLocked = false;
+        isSystemOverload = false;
+        clearInterval(scanInterval);
+        targetGroup.visible = false;
+        targetGroup.children[0].material.color.setHex(0xffffff); 
+        if (powerSprite) {
+            scene.remove(powerSprite);
+            powerSprite = null;
+        }
+        document.getElementById('hud-status').innerText = "系统重置完成";
+    }
+
+    function isPointing(hand) {
+        if (!hand || !hand.joints || !hand.joints['wrist']) return false;
+        const wrist = hand.joints['wrist'].position;
+        const indexTip = hand.joints['index-finger-tip'].position;
+        const middleTip = hand.joints['middle-finger-tip'].position;
+        return wrist.distanceTo(indexTip) > 0.10 && wrist.distanceTo(middleTip) < 0.10;
+    }
+
+    function isFist(hand) {
+        if (!hand || !hand.joints || !hand.joints['wrist']) return false;
+        const wrist = hand.joints['wrist'].position;
+        const indexTip = hand.joints['index-finger-tip'].position;
+        return wrist.distanceTo(indexTip) < 0.09;
+    }
+
+    function render(timestamp, frame) {
+        if (frame) {
+            const refSpace = renderer.xr.getReferenceSpace();
+            const session = renderer.xr.getSession();
+
+            // 强制手部材质
+            enforceCyberHandStyle(handLeft);
+            enforceCyberHandStyle(handRight);
+
+            if (!hitTestSourceRequested) {
+                session.requestReferenceSpace('viewer').then(ref => {
+                    session.requestHitTestSource({ space: ref }).then(source => hitTestSource = source);
+                });
+                hitTestSourceRequested = true;
+            }
+
+            if (hitTestSource && !isLocked) {
+                const hits = frame.getHitTestResults(hitTestSource);
+                if (hits.length > 0) {
+                    const pose = hits[0].getPose(refSpace);
+                    aimCursor.visible = true;
+                    aimCursor.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+                } else {
+                    aimCursor.visible = false;
+                }
+            }
+
+            if (!isLocked && aimCursor.visible && isPointing(handRight)) {
+                triggerScan(aimCursor.position);
+            }
+            if (isLocked && isFist(handLeft)) {
+                resetSystem();
+            }
+
+            if (isLocked && targetGroup.visible) {
+                const time = Date.now();
+                const progress = Math.min((time - animationStartTime) / 600, 1.0); 
+
+                // 战术框
+                const brackets = targetGroup.getObjectByName("brackets");
+                const scale = 2.5 - 1.5 * easeOutExpo(progress); 
+                brackets.scale.set(scale, scale, scale);
+                brackets.material.opacity = progress;
+
+                // 指针
+                const leftPtr = targetGroup.getObjectByName("leftPtr");
+                const rightPtr = targetGroup.getObjectByName("rightPtr");
+                const flyDist = 1.5 - 1.0 * easeOutExpo(progress);
+                leftPtr.position.x = -flyDist;
+                rightPtr.position.x = flyDist;
+
+                // UI
+                if (powerSprite) {
+                    const uiScale = easeOutBack(progress);
+                    // 如果过载，稍微放大一点表示不稳定
+                    const jitter = isSystemOverload ? (Math.random()-0.5)*0.05 : 0;
+                    powerSprite.scale.set((1.0+jitter) * uiScale, (0.5+jitter) * uiScale, 1);
+                    powerSprite.material.opacity = progress;
+                }
+
+                // 激光
+                const t = timestamp / 1000;
+                const laser = targetGroup.getObjectByName("laser");
+                // 过载时激光疯狂抖动
+                const laserSpeed = isSystemOverload ? 10 : 3;
+                laser.position.y = Math.sin(t * laserSpeed) * 0.25;
+
+                if (progress === 1.0) {
+                    leftPtr.position.x = -0.5 - Math.sin(t * 2) * 0.02; 
+                    rightPtr.position.x = 0.5 + Math.sin(t * 2) * 0.02;
+                }
+            }
+        }
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>    let targetGroup;    // 包含轮廓、指针的组
     let powerSprite;    // 战斗力UI
 
     // 逻辑控制
