@@ -3,34 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>XR Scouter 3D</title>
+    <title>Super Scouter XR</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
+        body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; }
 
-        /* 启动界面 */
         #launcher {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 20, 0, 0.95);
+            background: rgba(0, 10, 0, 0.95);
             display: flex; flex-direction: column; align-items: center; justify-content: center;
-            z-index: 999; color: #0f0;
-        }
-
-        .guide-box {
-            border: 2px solid #0f0; padding: 20px; border-radius: 10px;
-            background: rgba(0, 50, 0, 0.5); text-align: left;
-            margin-bottom: 20px; max-width: 80%;
+            z-index: 999; color: #fff;
         }
 
         button {
-            padding: 20px 50px; font-size: 24px; color: #000; background: #0f0;
-            border: none; border-radius: 50px; font-weight: bold; cursor: pointer;
+            padding: 15px 40px; font-size: 20px; 
+            color: #000; background: #fff; border: 2px solid #fff; 
+            border-radius: 30px; font-weight: bold; cursor: pointer; margin-top: 20px;
+            box-shadow: 0 0 15px #fff;
         }
 
-        /* 简单的 HUD 状态文字，固定在屏幕下方 */
         #hud-status {
             position: absolute; bottom: 10%; width: 100%; text-align: center;
-            color: #0f0; font-size: 20px; pointer-events: none; 
-            text-shadow: 0 0 5px #000; display: none;
+            color: #fff; font-size: 18px; pointer-events: none; 
+            text-shadow: 0 0 5px #000; display: none; letter-spacing: 2px;
         }
     </style>
     <!-- Import Map -->
@@ -46,33 +40,36 @@
 <body>
 
 <div id="launcher">
-    <h1>DRAGON BALL SCOUTER AR</h1>
-    <div class="guide-box">
-        <p>👉 <b>RIGHT HAND POINT</b>: Lock Target & Scan (右手食指指向目标)</p>
-        <p>✊ <b>LEFT HAND FIST</b>: Reset System (左手握拳复位)</p>
-        <p>ℹ️ Ensure you can see the <b>Wireframe Hands</b>!</p>
+    <h1 style="text-shadow: 0 0 10px #0f0;">SCOUTER SYSTEM v2.0</h1>
+    <div style="border:1px solid #666; padding:20px; border-radius:10px; background:rgba(0,0,0,0.5)">
+        <p>👉 <b>RIGHT HAND POINT</b>: Scan Target</p>
+        <p>✊ <b>LEFT HAND FIST</b>: Reset</p>
     </div>
-    <button id="btn-start">BOOT SYSTEM</button>
+    <button id="btn-start">ACTIVATE HUD</button>
 </div>
 
-<div id="hud-status">SYSTEM READY. WAITING FOR INPUT...</div>
+<div id="hud-status">SYSTEM ONLINE</div>
 
 <script type="module">
     import * as THREE from 'three';
-    import { ARButton } from 'three/addons/webxr/ARButton.js';
     import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
     let camera, scene, renderer;
     let handLeft, handRight;
-    let reticle;
+
+    // 物体对象
+    let cursorTriangle; // 启动时的白色三角
+    let targetGroup;    // 包含轮廓、指针的组
+    let powerSprite;    // 战斗力UI
+
+    // 逻辑控制
     let hitTestSource = null;
     let hitTestSourceRequested = false;
-
-    // 战斗力标签 (Sprite)
-    let powerSprite = null; 
-    let scanInterval = null;
     let isLocked = false;
+    let scanInterval = null;
+    let scanLineY = 0; // UI扫描线位置
 
+    // Canvas 用于绘制酷炫UI
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     canvas.width = 512; canvas.height = 256;
@@ -81,17 +78,13 @@
 
     async function initAR() {
         if (!navigator.xr) return alert("WebXR unsupported");
-
-        // 启动 Three.js
         const session = await navigator.xr.requestSession('immersive-ar', {
             requiredFeatures: ['local', 'hit-test'],
             optionalFeatures: ['hand-tracking', 'dom-overlay'],
             domOverlay: { root: document.body }
         });
-
         document.getElementById('launcher').style.display = 'none';
         document.getElementById('hud-status').style.display = 'block';
-
         initScene(session);
     }
 
@@ -105,287 +98,256 @@
         renderer.xr.enabled = true;
         renderer.xr.setReferenceSpaceType('local');
         renderer.xr.setSession(session);
-
         session.addEventListener('end', () => location.reload());
 
-        // 灯光
-        scene.add(new THREE.HemisphereLight(0xffffff, 0x444444));
+        const light = new THREE.DirectionalLight(0xffffff, 1.5);
+        light.position.set(0, 5, 2);
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x404040));
 
-        // --- 1. Reticle (瞄准光标) ---
-        const reticleGeo = new THREE.RingGeometry(0.05, 0.07, 32).rotateX(-Math.PI/2);
-        const reticleMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-        reticle = new THREE.Mesh(reticleGeo, reticleMat);
-        reticle.matrixAutoUpdate = false;
-        reticle.visible = false;
-        scene.add(reticle);
+        // --- 1. 启动时光标 (白色实心三角形) ---
+        // RingGeometry 参数: innerRadius, outerRadius, thetaSegments (3=三角形)
+        const cursorGeo = new THREE.RingGeometry(0.02, 0.06, 3); 
+        const cursorMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+        cursorTriangle = new THREE.Mesh(cursorGeo, cursorMat);
+        cursorTriangle.rotation.x = -Math.PI / 2; // 平躺
+        cursorTriangle.rotation.z = -Math.PI / 2; // 尖头朝前
+        cursorTriangle.visible = false;
+        scene.add(cursorTriangle);
 
-        // --- 2. 手势显示 (关键改进) ---
-        const handModelFactory = new XRHandModelFactory();
+        // --- 2. 目标锁定组合包 (轮廓 + 指针) ---
+        createTargetVisuals();
 
-        function createHand(index) {
-            const hand = renderer.xr.getHand(index);
-            // 使用 "mesh" 模式，这样你能看到像手套一样的3D模型
-            const model = handModelFactory.createHandModel(hand, "mesh");
-
-            // 修改材质，让它看起来像高科技全息手套
-            hand.addEventListener('connected', (event) => {
-               hand.traverse((child) => {
-                   if(child.isMesh) {
-                       child.material = new THREE.MeshBasicMaterial({ 
-                           color: 0x00ffff, 
-                           wireframe: true, 
-                           transparent: true, 
-                           opacity: 0.5 
-                       });
-                   }
-               });
-            });
-
-            hand.add(model);
-            scene.add(hand);
-            return hand;
-        }
-
-        handLeft = createHand(0);  // 左手
-        handRight = createHand(1); // 右手
+        // --- 3. 手势 ---
+        setupHands();
 
         renderer.setAnimationLoop(render);
     }
 
-    // --- 3. 3D UI 生成器 ---
-    function createPowerTag(position) {
-        if (powerSprite) scene.remove(powerSprite);
+    function createTargetVisuals() {
+        targetGroup = new THREE.Group();
+        targetGroup.visible = false;
+        scene.add(targetGroup);
 
-        const texture = new THREE.CanvasTexture(canvas);
-        const material = new THREE.SpriteMaterial({ map: texture });
-        powerSprite = new THREE.Sprite(material);
+        // A. 白色轮廓 (胶囊体 Wireframe) - 模拟人的外形
+        const capsuleGeo = new THREE.CapsuleGeometry(0.35, 1.0, 4, 8);
+        const capsuleMat = new THREE.MeshBasicMaterial({ 
+            color: 0xffffff, 
+            wireframe: true, 
+            transparent: true, 
+            opacity: 0.4 
+        });
+        const bodyOutline = new THREE.Mesh(capsuleGeo, capsuleMat);
+        bodyOutline.position.y = 0.85; // 胶囊中心上移，底边贴地
+        targetGroup.add(bodyOutline);
 
-        // 设置大小 (宽1米, 高0.5米)
-        powerSprite.scale.set(1.0, 0.5, 1);
-        // 位置设置在点击点上方 0.5米 (模拟头顶)
-        powerSprite.position.copy(position).add(new THREE.Vector3(0, 0.5, 0));
+        // B. 左右指向的三角形
+        const pointerGeo = new THREE.ConeGeometry(0.1, 0.2, 3); // 锥体看起来更像箭头
+        const pointerMat = new THREE.MeshNormalMaterial({ wireframe: false }); // 使用法线材质显得有科技感
 
-        scene.add(powerSprite);
-        return { texture, sprite: powerSprite };
+        // 左箭头 (指向右)
+        const leftPtr = new THREE.Mesh(pointerGeo, pointerMat);
+        leftPtr.position.set(-0.7, 1.0, 0); // 人物左侧
+        leftPtr.rotation.z = -Math.PI / 2;
+        leftPtr.name = "leftPtr";
+        targetGroup.add(leftPtr);
+
+        // 右箭头 (指向左)
+        const rightPtr = new THREE.Mesh(pointerGeo, pointerMat);
+        rightPtr.position.set(0.7, 1.0, 0); // 人物右侧
+        rightPtr.rotation.z = Math.PI / 2;
+        rightPtr.name = "rightPtr";
+        targetGroup.add(rightPtr);
     }
 
-    function drawCanvas(text, subtext, isFinal = false) {
-        // 清空画布
-        ctx.fillStyle = "rgba(0, 30, 0, 0.6)"; // 半透明黑绿底
-        ctx.fillRect(0, 0, 512, 256);
+    function setupHands() {
+        const handModelFactory = new XRHandModelFactory();
+        function buildHand(idx) {
+            const hand = renderer.xr.getHand(idx);
+            hand.add(handModelFactory.createHandModel(hand, "mesh"));
 
-        // 边框
-        ctx.strokeStyle = "#00ff00";
-        ctx.lineWidth = 5;
-        ctx.strokeRect(0, 0, 512, 256);
+            // 改变手部材质为白色科技网格
+            hand.addEventListener('connected', () => {
+                hand.traverse(child => {
+                    if(child.isMesh) {
+                        child.material = new THREE.MeshBasicMaterial({
+                            color: 0xccffcc, wireframe: true, transparent: true, opacity: 0.3
+                        });
+                    }
+                });
+            });
+            scene.add(hand);
+            return hand;
+        }
+        handLeft = buildHand(0);
+        handRight = buildHand(1);
+    }
 
-        // 文字
-        ctx.textAlign = "center";
+    // --- 酷炫 UI 绘制核心 ---
+    function updateCanvasUI(powerValue, label, isFinal) {
+        // 1. 关键：清除上一帧，防止重叠！
+        ctx.clearRect(0, 0, 512, 256);
+
+        // 2. 绘制半透明科技底板
+        ctx.fillStyle = "rgba(0, 20, 0, 0.7)";
+        ctx.beginPath();
+        ctx.moveTo(20, 0); ctx.lineTo(492, 0); ctx.lineTo(512, 20);
+        ctx.lineTo(512, 256); ctx.lineTo(20, 256); ctx.lineTo(0, 236); ctx.lineTo(0, 0);
+        ctx.fill();
+
+        // 3. 绘制边框
+        ctx.strokeStyle = isFinal && powerValue > 8000 ? "#ff3333" : "#00ff88";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+
+        // 4. 网格背景
+        ctx.strokeStyle = "rgba(0, 255, 100, 0.1)";
+        ctx.lineWidth = 1;
+        for(let i=0; i<512; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,256); ctx.stroke(); }
+        for(let i=0; i<256; i+=40) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(512,i); ctx.stroke(); }
+
+        // 5. 绘制文字 (带发光效果)
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = isFinal && powerValue > 8000 ? "#ff0000" : "#00ff00";
 
         // 战斗力数值
-        ctx.font = "bold 120px Courier New";
-        ctx.fillStyle = isFinal && parseInt(text) > 8000 ? "#ff3333" : "#00ff00";
-        ctx.fillText(text, 256, 150);
+        ctx.font = "bold 110px Courier New"; // 换个更粗的字体
+        ctx.textAlign = "center";
+        ctx.fillStyle = isFinal && powerValue > 8000 ? "#ff5555" : "#ccffcc";
+        ctx.fillText(powerValue, 256, 140);
 
-        // 副标题
-        ctx.font = "30px Courier New";
-        ctx.fillStyle = "#00ff00";
-        ctx.fillText(subtext, 256, 220);
+        // 标签
+        ctx.font = "30px Arial";
+        ctx.fillStyle = "#ffffff";
+        ctx.shadowBlur = 0;
+        ctx.fillText(label, 256, 210);
+
+        // 6. 动态扫描线
+        scanLineY = (scanLineY + 5) % 256;
+        ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.fillRect(0, scanLineY, 512, 10);
     }
 
-    // --- 4. 手势判定逻辑 ---
-
-    // 判定右手指向：食指伸直，中指弯曲
-    function isPointing(hand) {
-        if (!hand || !hand.joints || !hand.joints['wrist']) return false;
-
-        const wrist = hand.joints['wrist'].position;
-        const indexTip = hand.joints['index-finger-tip'].position;
-        const middleTip = hand.joints['middle-finger-tip'].position;
-
-        // 计算距离
-        const dIndex = wrist.distanceTo(indexTip);
-        const dMiddle = wrist.distanceTo(middleTip);
-
-        // 阈值：食指长度通常 > 10cm, 弯曲后中指 < 10cm
-        // 核心条件：食指明显比中指长 (伸出去了)
-        return dIndex > 0.10 && dMiddle < 0.10 && (dIndex > dMiddle + 0.03); 
-    }
-
-    // 判定左手握拳：所有手指都离手腕很近
-    function isFist(hand) {
-        if (!hand || !hand.joints || !hand.joints['wrist']) return false;
-
-        const wrist = hand.joints['wrist'].position;
-        const indexTip = hand.joints['index-finger-tip'].position;
-        const middleTip = hand.joints['middle-finger-tip'].position;
-        const ringTip = hand.joints['ring-finger-tip'].position;
-
-        const dIndex = wrist.distanceTo(indexTip);
-        const dMiddle = wrist.distanceTo(middleTip);
-        const dRing = wrist.distanceTo(ringTip);
-
-        // 如果三个主要手指都卷曲 (距离手腕 < 9cm)
-        return dIndex < 0.09 && dMiddle < 0.09 && dRing < 0.09;
-    }
-
-    // --- 5. 交互流程 ---
-    function triggerScan(pos) {
+    // --- 触发逻辑 ---
+    function triggerScan(position) {
         if (isLocked) return;
         isLocked = true;
+        cursorTriangle.visible = false; // 隐藏三角光标
 
-        // 在头顶生成 UI
-        const { texture } = createPowerTag(pos);
+        // 1. 显示目标轮廓组合
+        targetGroup.position.copy(position);
 
-        document.getElementById('hud-status').innerText = "TARGET LOCKED.";
+        // 让轮廓朝向摄像机 (只旋转Y轴)
+        targetGroup.lookAt(camera.position.x, targetGroup.position.y, camera.position.z);
+        targetGroup.visible = true;
 
-        // 动画逻辑
+        // 2. 创建头顶 UI Sprite
+        if (powerSprite) scene.remove(powerSprite);
+        const texture = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        powerSprite = new THREE.Sprite(mat);
+        powerSprite.scale.set(1.2, 0.6, 1);
+        powerSprite.position.copy(position).add(new THREE.Vector3(0, 1.9, 0)); // 在人头顶 (约1.9米高)
+        scene.add(powerSprite);
+
+        // 3. 开始数值跳动
         let steps = 0;
-        const targetVal = Math.floor(Math.random() * 9000) + 1000;
+        const targetVal = Math.floor(Math.random() * 8000) + 1000; // 1000~9000
 
         scanInterval = setInterval(() => {
             steps++;
-            const randomVal = Math.floor(Math.random() * 9999);
+            const rnd = Math.floor(Math.random() * 9999);
+            updateCanvasUI(rnd, "- ANALYZING -", false);
+            texture.needsUpdate = true; // 重要：通知纹理更新
 
-            drawCanvas(randomVal, "CALCULATING...", false);
-            texture.needsUpdate = true; // 必须设置，否则贴图不更新
-
-            if (steps > 30) {
+            if (steps > 40) { // 2秒后停止
                 clearInterval(scanInterval);
-                const isHigh = targetVal > 8000;
-                drawCanvas(targetVal, isHigh ? "IT'S OVER 9000!" : "POWER LEVEL", true);
+                const finalVal = targetVal + (Math.random() > 0.8 ? 8000 : 0); // 20%几率爆表
+                const label = finalVal > 9000 ? "!! WARNING !!" : "POWER LEVEL";
+                updateCanvasUI(finalVal, label, true);
                 texture.needsUpdate = true;
             }
         }, 50);
     }
 
     function resetSystem() {
-        if (!isLocked) return;
-
         isLocked = false;
         clearInterval(scanInterval);
+        targetGroup.visible = false; // 隐藏轮廓
         if (powerSprite) {
             scene.remove(powerSprite);
             powerSprite = null;
         }
-        document.getElementById('hud-status').innerText = "READY. POINT TO SCAN.";
+        document.getElementById('hud-status').innerText = "SYSTEM READY";
     }
 
-    // --- 6. 渲染循环 ---
+    // --- 手势判定 ---
+    function isPointing(hand) {
+        if (!hand || !hand.joints || !hand.joints['wrist']) return false;
+        const wrist = hand.joints['wrist'].position;
+        const indexTip = hand.joints['index-finger-tip'].position;
+        const middleTip = hand.joints['middle-finger-tip'].position;
+
+        // 宽松判定：食指离手腕远，中指离手腕近
+        return wrist.distanceTo(indexTip) > 0.10 && wrist.distanceTo(middleTip) < 0.10;
+    }
+
+    function isFist(hand) {
+        if (!hand || !hand.joints || !hand.joints['wrist']) return false;
+        const wrist = hand.joints['wrist'].position;
+        const indexTip = hand.joints['index-finger-tip'].position;
+        // 食指收回
+        return wrist.distanceTo(indexTip) < 0.09;
+    }
+
+    // --- 渲染循环 ---
     function render(timestamp, frame) {
         if (frame) {
-            const referenceSpace = renderer.xr.getReferenceSpace();
+            const refSpace = renderer.xr.getReferenceSpace();
             const session = renderer.xr.getSession();
 
-            // Hit Test (瞄准)
-            if (hitTestSourceRequested === false) {
-                session.requestReferenceSpace('viewer').then((refSpace) => {
-                    session.requestHitTestSource({ space: refSpace }).then((source) => {
-                        hitTestSource = source;
-                    });
+            // Hit Test
+            if (!hitTestSourceRequested) {
+                session.requestReferenceSpace('viewer').then(ref => {
+                    session.requestHitTestSource({ space: ref }).then(source => hitTestSource = source);
                 });
-                session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
                 hitTestSourceRequested = true;
             }
 
-            if (hitTestSource) {
-                const hitTestResults = frame.getHitTestResults(hitTestSource);
+            if (hitTestSource && !isLocked) {
+                const hits = frame.getHitTestResults(hitTestSource);
+                if (hits.length > 0) {
+                    const pose = hits[0].getPose(refSpace);
+                    cursorTriangle.visible = true;
+                    cursorTriangle.matrix.fromArray(pose.transform.matrix);
 
-                // 只有在没锁定的情况下才更新光标
-                if (!isLocked && hitTestResults.length > 0) {
-                    const hit = hitTestResults[0];
-                    reticle.visible = true;
-                    reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                    // 修正三角形旋转：hitTest给出的是平面法线，我们需要微调让它指着前方
+                    // 默认Ring是平躺的，我们保持它平躺贴地
                 } else {
-                    reticle.visible = false;
+                    cursorTriangle.visible = false;
                 }
             }
 
-            // 手势监听
-            // 1. 右手指向 -> 触发
-            if (!isLocked && reticle.visible && isPointing(handRight)) {
-                const targetPos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-                triggerScan(targetPos);
+            // 交互
+            if (!isLocked && cursorTriangle.visible && isPointing(handRight)) {
+                const pos = new THREE.Vector3().setFromMatrixPosition(cursorTriangle.matrix);
+                triggerScan(pos);
             }
-
-            // 2. 左手握拳 -> 复位
             if (isLocked && isFist(handLeft)) {
                 resetSystem();
             }
-        }
-        renderer.render(scene, camera);
-    }
-</script>
-</body>
-</html>
-        // 1. 检测手势
-        let gesture = 'neutral';
-        const g1 = getGesture(hand1);
-        const g2 = getGesture(hand2);
-        if (g1 !== 'neutral' && g1 !== 'none') gesture = g1;
-        else if (g2 !== 'neutral' && g2 !== 'none') gesture = g2;
 
-        // 2. 粒子动画逻辑
-        const positions = particleGeo.attributes.position.array;
-
-        // 目标颜色 (用于整个粒子团变色)
-        let targetR=0, targetG=0, targetB=0; 
-        // 这里只是简单的逻辑，如果要改单个粒子颜色需要操作 color buffer，为性能考虑暂且只改形态
-
-        for(let i=0; i<PARTICLE_COUNT; i++) {
-            const ix = i * 3;
-            const ox = originalPositions[i].x;
-            const oy = originalPositions[i].y;
-            const oz = originalPositions[i].z;
-
-            // --- 呼吸效果 (Idle Animation) ---
-            // 让粒子在原位附近做正弦波运动
-            const drift = Math.sin(time * 1.5 + randomOffsets[i]) * 0.02;
-
-            let tx, ty, tz;
-
-            if (gesture === 'palm') {
-                // 💥 烟花模式：向外爆炸，并加上强烈的随机抖动
-                // 颜色我们通过 material.color 全局叠加
-                tx = ox * 3.5 + drift;
-                ty = oy * 3.5 + drift;
-                tz = oz * 3.5 + drift;
-            } else if (gesture === 'fist') {
-                // 🛑 聚合模式：强力压缩到中心
-                tx = ox * 0.1;
-                ty = oy * 0.1;
-                tz = oz * 0.1;
-            } else {
-                // 🌊 默认模式：复原 + 呼吸
-                tx = ox + drift;
-                ty = oy + drift;
-                tz = oz + drift;
+            // 动画：左右指针浮动
+            if (isLocked && targetGroup.visible) {
+                const time = timestamp / 1000;
+                const leftPtr = targetGroup.getObjectByName("leftPtr");
+                const rightPtr = targetGroup.getObjectByName("rightPtr");
+                if (leftPtr && rightPtr) {
+                    leftPtr.position.x = -0.7 + Math.sin(time * 5) * 0.1; // 左右摆动
+                    rightPtr.position.x = 0.7 - Math.sin(time * 5) * 0.1;
+                }
             }
-
-            // 平滑插值 (Lerp) - 让运动有“阻尼感”，而不是瞬间跳变
-            // 0.1 是平滑系数，越小越慢
-            positions[ix]   += (tx - positions[ix]) * 0.08;
-            positions[ix+1] += (ty - positions[ix+1]) * 0.08;
-            positions[ix+2] += (tz - positions[ix+2]) * 0.08;
         }
-
-        // 全局颜色修正
-        if (gesture === 'palm') {
-            particleSystem.material.color.setHex(0xffaa00); // 暖金
-            particleSystem.material.opacity = 1.0;
-        } else if (gesture === 'fist') {
-            particleSystem.material.color.setHex(0xff0055); // 炽红
-            particleSystem.material.opacity = 0.8;
-        } else {
-            particleSystem.material.color.setHex(0xffffff); // 恢复原本的蓝紫渐变
-            particleSystem.material.opacity = 0.9;
-        }
-
-        particleGeo.attributes.position.needsUpdate = true;
-
-        // 缓慢旋转整个舞台，增加空间感
-        stage.rotation.y += 0.002;
-
         renderer.render(scene, camera);
     }
 </script>
